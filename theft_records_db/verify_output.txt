@@ -1,0 +1,28 @@
+============================================================
+LIVE PROOF — theft_records.theft_shredding
+============================================================
+Connected database : theft_records
+Tables found       : ['theft_shredding']
+
+Schema (DESCRIBE):
+  case_id         int          null=NO key=PRI
+  plate_number    varchar(20)  null=NO key=MUL
+  report_type     varchar(20)  null=NO key=MUL
+  report_date     date         null=NO key=
+
+Row count          : 228
+Breakdown:
+  SHREDDED     117
+  STOLEN       111
+
+Recent cases:
+  case=200   plate=JK 50 DG 5376    type=STOLEN    date=2026-09-04
+  case=202   plate=WB 43 VB 0694    type=SHREDDED  date=2026-08-29
+  case=124   plate=CH 39 AL 5281    type=SHREDDED  date=2026-08-25
+  case=101   plate=RJ 16 UP 6210    type=SHREDDED  date=2026-08-24
+  case=168   plate=GA 27 RW 6687    type=SHREDDED  date=2026-08-22
+  case=62    plate=AP 8 XG 9513     type=SHREDDED  date=2026-08-19
+  case=198   plate=PB 8 GS 7973     type=SHREDDED  date=2026-08-15
+  case=110   plate=MZ 12 HS 2074    type=SHREDDED  date=2026-08-15
+============================================================
+OK — database is live and populated.

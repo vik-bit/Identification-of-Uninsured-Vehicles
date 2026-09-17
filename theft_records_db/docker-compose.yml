@@ -1,0 +1,32 @@
+# theft_records source — isolated MySQL (IIA)
+# Host port 3310 → container 3306 (keeps native MySQL on 3306 free for DWH)
+
+services:
+  theft-mysql:
+    # If `docker pull mysql:8.0` fails on your network, run once:
+    #   docker pull public.ecr.aws/docker/library/mysql:8.0
+    #   docker tag public.ecr.aws/docker/library/mysql:8.0 mysql:8.0
+    image: mysql:8.0
+    container_name: iia-theft-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: theft_root_pw
+      MYSQL_DATABASE: theft_records
+      MYSQL_USER: iia_app
+      MYSQL_PASSWORD: iia_app_pw
+    ports:
+      - "3310:3306"
+    volumes:
+      - theft_mysql_data:/var/lib/mysql
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uiia_app", "-piia_app_pw"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  theft_mysql_data:

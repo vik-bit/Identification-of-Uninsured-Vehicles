@@ -1,0 +1,9 @@
+CREATE TABLE `theft_shredding` (
+  `case_id` int NOT NULL AUTO_INCREMENT,
+  `plate_number` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `report_type` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `report_date` date NOT NULL,
+  PRIMARY KEY (`case_id`),
+  KEY `idx_plate` (`plate_number`),
+  KEY `idx_type` (`report_type`)
+) ENGINE=InnoDB AUTO_INCREMENT=229 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci

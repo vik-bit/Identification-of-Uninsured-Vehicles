@@ -1,18 +1,27 @@
 """
 run_etl.py -- extract, standardize, transform, decide, load, report.
-Incremental: capture_log is extracted only for rows newer than the last
-watermark, since it's the one table that grows continuously. The other
-3 sources are small enough to re-pull in full each run -- no schema
-change needed to support that. Load is an idempotent upsert keyed on
-plate_canonical, so re-running never duplicates and is always safe.
+
+Sources can be LIVE (direct MySQL/Docker) or STAGING (rows pushed via ingest_api).
+See staging.EXTRACT_FROM_STAGING.
 """
 
 import re
+import time
 from datetime import date, datetime
+
 from db_config import connect
+from staging import EXTRACT_FROM_STAGING, ensure_staging_tables, fetch_staging
+from warehouse_ops import (
+    ensure_ops_tables,
+    log_changes,
+    log_etl_run,
+    rebuild_conflict_cache,
+    rebuild_plate_xref,
+    refresh_serving_tables,
+)
 
 AS_OF = date(2026, 9, 12)
-SENTINEL_START = datetime(2000, 1, 1)  # "beginning of time" for the very first run
+SENTINEL_START = datetime(2000, 1, 1)
 
 
 def fetchall(database, query, params=None):
@@ -21,54 +30,152 @@ def fetchall(database, query, params=None):
     cur.execute(query, params or ())
     cols = [d[0] for d in cur.description]
     rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-    cur.close(); conn.close()
+    cur.close()
+    conn.close()
     return rows
 
 
 def normalize_plate(raw):
-    return re.sub(r"[^A-Z0-9]", "", raw.upper())
+    return re.sub(r"[^A-Z0-9]", "", str(raw).upper())
+
+
+def extract_captures(watermark):
+    if EXTRACT_FROM_STAGING.get("roadcapture"):
+        rows = fetch_staging("roadcapture")
+        filtered = [
+            r for r in rows
+            if r.get("capture_time") is not None and r["capture_time"] > watermark
+        ]
+        print(f"  extract roadcapture: STAGING ({len(filtered)}/{len(rows)} after watermark)")
+        return filtered
+    rows = fetchall(
+        "roadcapture",
+        "SELECT * FROM capture_log WHERE capture_time > %s",
+        (watermark,),
+    )
+    print(f"  extract roadcapture: LIVE ({len(rows)} rows after watermark)")
+    return rows
+
+
+def extract_policies():
+    if EXTRACT_FROM_STAGING.get("insurance"):
+        rows = fetch_staging("insurance")
+        print(f"  extract insurance: STAGING ({len(rows)} rows)")
+        return rows
+    rows = fetchall("insurance", "SELECT * FROM policies")
+    print(f"  extract insurance: LIVE ({len(rows)} rows)")
+    return rows
+
+
+def extract_regs():
+    if EXTRACT_FROM_STAGING.get("rto_registration"):
+        rows = fetch_staging("rto_registration")
+        print(f"  extract rto_registration: STAGING ({len(rows)} rows)")
+        return rows
+    rows = fetchall("rto_registration", "SELECT * FROM registrations")
+    print(f"  extract rto_registration: LIVE ({len(rows)} rows)")
+    return rows
+
+
+def extract_thefts():
+    if EXTRACT_FROM_STAGING.get("theft_records"):
+        rows = fetch_staging("theft_records")
+        print(f"  extract theft_records: STAGING ({len(rows)} rows)")
+        return rows
+    rows = fetchall("theft_records", "SELECT * FROM theft_shredding")
+    print(f"  extract theft_records: LIVE ({len(rows)} rows)")
+    return rows
 
 
 def get_watermark():
     wh = connect("vehicle_dwh")
     cur = wh.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS etl_watermark (
-        source_name VARCHAR(50) PRIMARY KEY, last_processed_at DATETIME)""")
-    cur.execute("SELECT last_processed_at FROM etl_watermark WHERE source_name='capture_log'")
+    ensure_ops_tables(cur)
+    ensure_staging_tables(cur)
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS etl_watermark (
+        source_name VARCHAR(50) PRIMARY KEY, last_processed_at DATETIME)"""
+    )
+    cur.execute(
+        "SELECT last_processed_at FROM etl_watermark WHERE source_name='capture_log'"
+    )
     row = cur.fetchone()
-    cur.close(); wh.close()
+    wh.commit()
+    cur.close()
+    wh.close()
     return row[0] if row else SENTINEL_START
 
 
-def set_watermark(new_watermark):
-    wh = connect("vehicle_dwh")
-    cur = wh.cursor()
-    cur.execute("""INSERT INTO etl_watermark (source_name, last_processed_at) VALUES ('capture_log', %s)
-                   ON DUPLICATE KEY UPDATE last_processed_at=VALUES(last_processed_at)""",
-                (new_watermark,))
-    wh.commit(); cur.close(); wh.close()
+def set_watermark(cur, new_watermark):
+    cur.execute(
+        """INSERT INTO etl_watermark (source_name, last_processed_at) VALUES ('capture_log', %s)
+           ON DUPLICATE KEY UPDATE last_processed_at=VALUES(last_processed_at)""",
+        (new_watermark,),
+    )
 
 
-# ---------------- EXTRACT (incremental on capture_log only) ----------------
+started = datetime.now()
+t0 = time.perf_counter()
+print(
+    "Extract modes:",
+    {k: ("STAGING/push" if v else "LIVE") for k, v in EXTRACT_FROM_STAGING.items()},
+)
 watermark = get_watermark()
-new_captures = fetchall("roadcapture",
-    "SELECT * FROM capture_log WHERE capture_time > %s", (watermark,))
+new_captures = extract_captures(watermark)
 
 print(f"Watermark going in: {watermark}")
 print(f"New capture events since then: {len(new_captures)}")
 
-if not new_captures:
-    print("Nothing new -- exiting without touching the warehouse.")
-else:
-    policies = fetchall("insurance", "SELECT * FROM policies")
-    regs = fetchall("rto_registration", "SELECT * FROM registrations")
-    thefts = fetchall("theft_records", "SELECT * FROM theft_shredding")
+wh = connect("vehicle_dwh")
+wcur = wh.cursor()
+ensure_ops_tables(wcur)
+ensure_staging_tables(wcur)
+wcur.execute(
+    """CREATE TABLE IF NOT EXISTS vehicle_360 (
+    plate_canonical VARCHAR(20) PRIMARY KEY, owner_name VARCHAR(50), make_model VARCHAR(50),
+    registration_date DATE, insurer VARCHAR(50), policy_valid_to DATE,
+    theft_flag VARCHAR(20), last_seen_location VARCHAR(100), last_seen_time DATETIME,
+    status VARCHAR(100))"""
+)
 
+# Always pull dimension sources so xref + conflict cache stay current
+# (captures stay incremental via watermark).
+policies = extract_policies()
+regs = extract_regs()
+thefts = extract_thefts()
+# Full capture set for xref (watermark only gates vehicle_360 upserts)
+all_captures = (
+    fetch_staging("roadcapture")
+    if EXTRACT_FROM_STAGING.get("roadcapture")
+    else fetchall("roadcapture", "SELECT * FROM capture_log")
+)
+
+if not new_captures:
+    counts = refresh_serving_tables(wcur)
+    n_xref = rebuild_plate_xref(wcur, all_captures, policies, regs, thefts, normalize_plate)
+    n_conf = rebuild_conflict_cache(wcur, thefts, normalize_plate)
+    finished = datetime.now()
+    log_etl_run(
+        wcur,
+        started_at=started,
+        finished_at=finished,
+        watermark_in=watermark,
+        watermark_out=watermark,
+        capture_events=0,
+        plates_upserted=0,
+        status_changes=0,
+        note=f"idle — serving/xref/conflicts refreshed (xref={n_xref}, conflicts={n_conf})",
+    )
+    wh.commit()
+    wcur.close()
+    wh.close()
+    print("Nothing new in capture_log — refreshed serving + plate xref + conflict cache.")
+    print(f"Serving summary: {counts} | xref={n_xref} | conflicts={n_conf}")
+else:
     policy_by_plate = {normalize_plate(p["vehicle_number"]): p for p in policies}
     reg_by_plate = {normalize_plate(r["reg_no"]): r for r in regs}
     stolen_by_plate = {normalize_plate(t["plate_number"]): t for t in thefts}
 
-    # ---------------- TRANSFORM + DECIDE ----------------
     def decide_status(plate):
         if plate in stolen_by_plate:
             return f"STOLEN/SHREDDED -> FLAG ({stolen_by_plate[plate]['report_type']})"
@@ -80,55 +187,90 @@ else:
         return "OK - INSURED & CLEAR"
 
     latest_by_plate = {}
-    for c in new_captures:  # a vehicle can appear more than once even within one delta
+    for c in new_captures:
         plate = normalize_plate(c["plate_no"])
         prev = latest_by_plate.get(plate)
         if prev is None or c["capture_time"] > prev["capture_time"]:
             latest_by_plate[plate] = c
 
+    plates = list(latest_by_plate.keys())
+    old_status = {}
+    if plates:
+        placeholders = ",".join(["%s"] * len(plates))
+        wcur.execute(
+            f"SELECT plate_canonical, status FROM vehicle_360 WHERE plate_canonical IN ({placeholders})",
+            plates,
+        )
+        old_status = dict(wcur.fetchall())
+
     rows = []
+    changes = []
     for plate, c in latest_by_plate.items():
         reg, pol = reg_by_plate.get(plate, {}), policy_by_plate.get(plate, {})
         theft = stolen_by_plate.get(plate, {})
-        rows.append((
-            plate, reg.get("owner_name"), reg.get("make_model"), reg.get("registration_date"),
-            pol.get("insurer"), pol.get("valid_to"), theft.get("report_type", "-"),
-            c["location"], c["capture_time"], decide_status(plate),
-        ))
+        new_st = decide_status(plate)
+        rows.append(
+            (
+                plate,
+                reg.get("owner_name"),
+                reg.get("make_model"),
+                reg.get("registration_date"),
+                pol.get("insurer"),
+                pol.get("valid_to"),
+                theft.get("report_type", "-"),
+                c["location"],
+                c["capture_time"],
+                new_st,
+            )
+        )
+        prev = old_status.get(plate)
+        if prev is None:
+            changes.append((plate, "INSERT", None, new_st))
+        elif prev != new_st:
+            changes.append((plate, "STATUS_CHANGE", prev, new_st))
 
-    # ---------------- LOAD (upsert -- never drop, never reload what's unchanged) ----------------
-    wh = connect("vehicle_dwh")
-    wcur = wh.cursor()
-    wcur.execute("""CREATE TABLE IF NOT EXISTS vehicle_360 (
-        plate_canonical VARCHAR(20) PRIMARY KEY, owner_name VARCHAR(50), make_model VARCHAR(50),
-        registration_date DATE, insurer VARCHAR(50), policy_valid_to DATE,
-        theft_flag VARCHAR(20), last_seen_location VARCHAR(100), last_seen_time DATETIME,
-        status VARCHAR(100))""")
-    wcur.executemany("""INSERT INTO vehicle_360 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+    wcur.executemany(
+        """INSERT INTO vehicle_360 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON DUPLICATE KEY UPDATE
           owner_name=VALUES(owner_name), make_model=VALUES(make_model),
           registration_date=VALUES(registration_date), insurer=VALUES(insurer),
           policy_valid_to=VALUES(policy_valid_to), theft_flag=VALUES(theft_flag),
           last_seen_location=VALUES(last_seen_location), last_seen_time=VALUES(last_seen_time),
-          status=VALUES(status)""", rows)
-    wh.commit()
+          status=VALUES(status)""",
+        rows,
+    )
 
     new_watermark = max(c["capture_time"] for c in new_captures)
-    set_watermark(new_watermark)
+    set_watermark(wcur, new_watermark)
 
+    counts = refresh_serving_tables(wcur)
+    n_xref = rebuild_plate_xref(wcur, all_captures, policies, regs, thefts, normalize_plate)
+    n_conf = rebuild_conflict_cache(wcur, thefts, normalize_plate)
+    finished = datetime.now()
+    run_id = log_etl_run(
+        wcur,
+        started_at=started,
+        finished_at=finished,
+        watermark_in=watermark,
+        watermark_out=new_watermark,
+        capture_events=len(new_captures),
+        plates_upserted=len(rows),
+        status_changes=len(changes),
+        note=f"incremental + serving/xref/conflicts (xref={n_xref}, conflicts={n_conf})",
+    )
+    log_changes(wcur, run_id, changes)
+    wh.commit()
+
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
     print(f"-> {len(rows)} distinct vehicle(s) upserted into vehicle_360.")
+    print(f"-> {len(changes)} change-log entries (inserts / status flips).")
+    print(f"-> plate xref rows={n_xref}, conflict cache rows={n_conf}")
     print(f"Watermark advanced to: {new_watermark}")
+    print(f"ETL run_id={run_id} duration~={elapsed_ms} ms")
+    print("\nServing layer (dwh_status_summary):")
+    total = sum(counts.values()) or 1
+    for k, v in counts.items():
+        print(f"  {k:14} {v:5}  ({v / total:.1%})")
 
-    # ---------------- REPORT (always the FULL current warehouse, not just this run's delta) ----------------
-    wcur.execute("SELECT status FROM vehicle_360")
-    by_bucket = {"OK": 0, "EXPIRED": 0, "STOLEN": 0, "NO INSURANCE": 0}
-    for (s,) in wcur.fetchall():
-        if s.startswith("OK"): by_bucket["OK"] += 1
-        elif "EXPIRED" in s: by_bucket["EXPIRED"] += 1
-        elif "STOLEN" in s: by_bucket["STOLEN"] += 1
-        else: by_bucket["NO INSURANCE"] += 1
-    total = sum(by_bucket.values())
-    print(f"\nFull vehicle_360 status breakdown (cumulative across all runs so far, {total} vehicles):")
-    for k, v in by_bucket.items():
-        print(f"  {k:14} {v:5}  ({v/total:.1%})")
-    wcur.close(); wh.close()
+    wcur.close()
+    wh.close()
