@@ -1,22 +1,26 @@
 # Python
 venv/
+.venv/
 __pycache__/
 *.pyc
+*.pyo
 
-# Environment / secrets -- in case DB credentials ever move out of
-# db_config.py and into a .env file instead
+# Environment / secrets
 .env
+.env.*
 
-# macOS
+# OS / editors
 .DS_Store
-
-# Editors (harmless to keep even if you don't use these)
+Thumbs.db
 .vscode/
 .idea/
 
-# LaTeX build artifacts, in case the system-design .tex/.pdf work
-# ever lands in this same repo
+# Large local tools (do not commit installers / binaries)
+tools/
+*.exe
+
+# Caches / eval dumps
+match_eval_results.json
 *.aux
-*.log
 *.out
 *.toc
