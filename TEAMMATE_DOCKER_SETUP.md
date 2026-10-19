@@ -16,6 +16,8 @@ The integrator (warehouse owner) will connect to your container using **your IP 
 
 Below uses **insurance** as the example. Rename if you own another source.
 
+**If you own RTO** (`rto_registration`, port **3309**, old project schema with lowercase `reg_no`): use **[`TEAMMATE_DOCKER_SETUP_RTO.md`](TEAMMATE_DOCKER_SETUP_RTO.md)** instead — do not invent a new table shape.
+
 ---
 
 ## 0. Install

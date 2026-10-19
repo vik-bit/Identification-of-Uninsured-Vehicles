@@ -11,14 +11,25 @@ from datetime import date, datetime
 
 from db_config import connect
 
-# Which sources ETL should read from staging (pushed) vs live MySQL
-# Set "insurance" to staging when teammate pushes; keep others live until ready.
+# ---------------------------------------------------------------------------
+# Source ownership for THIS warehouse machine
+# ---------------------------------------------------------------------------
+# Local (LIVE MySQL on this PC)     → roadcapture, theft_records
+# External teammates (PUSH only)    → insurance, rto_registration
+#
+# True  = ETL reads stg_* in vehicle_dwh (ignore any local copy of that DB)
+# False = ETL connects live to db_config.SOURCES[name]
 EXTRACT_FROM_STAGING = {
-    "roadcapture": False,
-    "insurance": True,   # teammate push target
-    "rto_registration": False,
-    "theft_records": True,  # pushed from your theft Docker into stg_theft_shredding
+    "roadcapture": False,       # YOU — local MySQL
+    "theft_records": False,     # YOU — Docker :3310
+    "insurance": True,          # TEAMMATE — push → stg_policies only
+    "rto_registration": True,   # TEAMMATE — push → stg_registrations only
 }
+
+# Hard rule used by ETL: never fall back to LIVE for external sources
+EXTERNAL_STAGING_ONLY = ("insurance", "rto_registration")
+LOCAL_LIVE_ONLY = ("roadcapture", "theft_records")
+
 
 STAGING_TABLE = {
     "roadcapture": "stg_capture_log",

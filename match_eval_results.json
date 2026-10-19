@@ -1,0 +1,185 @@
+{
+  "run_at": "2026-10-19T09:08:02",
+  "n_dev": 50,
+  "n_test": 51,
+  "weights": {
+    "ocr": 0.3,
+    "lev": 0.1,
+    "jw": 0.6,
+    "format": 0.0
+  },
+  "weights_in_app": {
+    "ocr": 0.3,
+    "lev": 0.3,
+    "jw": 0.3,
+    "format": 0.1
+  },
+  "blocking_recall": 1.0,
+  "dense_registry": true,
+  "sparse_db_levenshtein_top1": 0.9901,
+  "overall": {
+    "exact": {
+      "top1": 0.1176,
+      "top3": 0.1176,
+      "mrr": 0.1176,
+      "n": 51
+    },
+    "levenshtein": {
+      "top1": 0.2745,
+      "top3": 0.4902,
+      "mrr": 0.4626,
+      "n": 51
+    },
+    "jaro_winkler": {
+      "top1": 0.4118,
+      "top3": 0.5098,
+      "mrr": 0.5378,
+      "n": 51
+    },
+    "ocr_weighted": {
+      "top1": 0.5882,
+      "top3": 0.7843,
+      "mrr": 0.7155,
+      "n": 51
+    },
+    "combined": {
+      "top1": 0.6078,
+      "top3": 0.7843,
+      "mrr": 0.7258,
+      "n": 51
+    },
+    "combined+context": {
+      "top1": 1.0,
+      "top3": 1.0,
+      "mrr": 1.0,
+      "n": 51
+    }
+  },
+  "per_noise_kind_top1": {
+    "ocr_1": {
+      "exact": 0.0,
+      "levenshtein": 0.1667,
+      "jaro_winkler": 0.1667,
+      "ocr_weighted": 1.0,
+      "combined": 1.0,
+      "combined+context": 1.0
+    },
+    "ocr_2": {
+      "exact": 0.0,
+      "levenshtein": 0.0,
+      "jaro_winkler": 0.0,
+      "ocr_weighted": 1.0,
+      "combined": 0.8333,
+      "combined+context": 1.0
+    },
+    "dropped": {
+      "exact": 0.0,
+      "levenshtein": 0.1429,
+      "jaro_winkler": 0.1429,
+      "ocr_weighted": 0.1429,
+      "combined": 0.1429,
+      "combined+context": 1.0
+    },
+    "inserted": {
+      "exact": 0.0,
+      "levenshtein": 0.7143,
+      "jaro_winkler": 0.8571,
+      "ocr_weighted": 0.7143,
+      "combined": 0.8571,
+      "combined+context": 1.0
+    },
+    "swapped": {
+      "exact": 0.0,
+      "levenshtein": 0.0,
+      "jaro_winkler": 0.8571,
+      "ocr_weighted": 0.7143,
+      "combined": 0.8571,
+      "combined+context": 1.0
+    },
+    "ocr+dropped": {
+      "exact": 0.0,
+      "levenshtein": 0.0,
+      "jaro_winkler": 0.0,
+      "ocr_weighted": 0.0,
+      "combined": 0.0,
+      "combined+context": 1.0
+    },
+    "unreadable": {
+      "exact": 0.0,
+      "levenshtein": 0.1667,
+      "jaro_winkler": 0.1667,
+      "ocr_weighted": 0.1667,
+      "combined": 0.1667,
+      "combined+context": 1.0
+    },
+    "format": {
+      "exact": 1.0,
+      "levenshtein": 1.0,
+      "jaro_winkler": 1.0,
+      "ocr_weighted": 1.0,
+      "combined": 1.0,
+      "combined+context": 1.0
+    }
+  },
+  "seeded_noise": {
+    "n": 67,
+    "top1": 1.0,
+    "by_kind": {
+      "ocr_substitution": "46/46",
+      "dropped_char": "6/6",
+      "swapped_chars": "5/5",
+      "ocr_double": "5/5",
+      "format_variant": "5/5"
+    }
+  },
+  "examples": [
+    {
+      "query": "KL22GQ427",
+      "truth": "KL22GQ4527",
+      "kind": "dropped",
+      "color": "White"
+    },
+    {
+      "query": "MP27UFH4270",
+      "truth": "MP27UH4270",
+      "kind": "inserted",
+      "color": "Black"
+    },
+    {
+      "query": "MN31MJ5050",
+      "truth": "MN31MJ5005",
+      "kind": "swapped",
+      "color": "Blue"
+    },
+    {
+      "query": "DL4STZ261",
+      "truth": "DL45TZ2612",
+      "kind": "ocr+dropped",
+      "color": "Red"
+    },
+    {
+      "query": "TR18VG4?92",
+      "truth": "TR18VG4892",
+      "kind": "unreadable",
+      "color": null
+    },
+    {
+      "query": "JH-47-BM-8590",
+      "truth": "JH47BM8590",
+      "kind": "format",
+      "color": "Grey"
+    },
+    {
+      "query": "HR45PT21O4",
+      "truth": "HR45PT2104",
+      "kind": "ocr_1",
+      "color": "Red"
+    },
+    {
+      "query": "NL100V27I3",
+      "truth": "NL10DV2713",
+      "kind": "ocr_2",
+      "color": "Red"
+    }
+  ]
+}

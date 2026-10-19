@@ -42,3 +42,11 @@ python run_etl.py
 ```
 
 Open **Conflicts** (or Overview lookup) for `DL9CAF9999` — SHREDDED then later sighted; no single source DB shows both.
+
+## Phase 2 — noisy plates (entity matching & cleansing)
+
+See **PHASE2_VIVA.md**. One command checks every rubric item:
+
+```powershell
+python phase2_check.py --full
+```

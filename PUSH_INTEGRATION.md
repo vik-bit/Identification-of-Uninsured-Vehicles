@@ -31,7 +31,16 @@ Then after they push:
 python run_etl.py
 ```
 
-`staging.py` → `EXTRACT_FROM_STAGING["insurance"] = True` means ETL reads pushed insurance rows.
+`staging.py` → extract ownership on the warehouse machine:
+
+| Source | ETL reads |
+|--------|-----------|
+| `roadcapture` | **LIVE** local |
+| `theft_records` | **LIVE** local Docker `:3310` |
+| `insurance` | **STAGING only** (`stg_policies`) — teammate push |
+| `rto_registration` | **STAGING only** (`stg_registrations`) — teammate push |
+
+Local leftover `insurance` / `rto_registration` DBs on this PC are **ignored** by ETL.
 
 ## Teammate
 

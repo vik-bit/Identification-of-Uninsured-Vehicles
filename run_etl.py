@@ -10,7 +10,13 @@ import time
 from datetime import date, datetime
 
 from db_config import connect
-from staging import EXTRACT_FROM_STAGING, ensure_staging_tables, fetch_staging
+from staging import (
+    EXTRACT_FROM_STAGING,
+    EXTERNAL_STAGING_ONLY,
+    LOCAL_LIVE_ONLY,
+    ensure_staging_tables,
+    fetch_staging,
+)
 from warehouse_ops import (
     ensure_ops_tables,
     log_changes,
@@ -40,50 +46,53 @@ def normalize_plate(raw):
 
 
 def extract_captures(watermark):
-    if EXTRACT_FROM_STAGING.get("roadcapture"):
-        rows = fetch_staging("roadcapture")
-        filtered = [
-            r for r in rows
-            if r.get("capture_time") is not None and r["capture_time"] > watermark
-        ]
-        print(f"  extract roadcapture: STAGING ({len(filtered)}/{len(rows)} after watermark)")
-        return filtered
-    rows = fetchall(
-        "roadcapture",
-        "SELECT * FROM capture_log WHERE capture_time > %s",
-        (watermark,),
-    )
-    print(f"  extract roadcapture: LIVE ({len(rows)} rows after watermark)")
-    return rows
+    # Local: always LIVE roadcapture (ignore leftover stg_capture_log)
+    if "roadcapture" in LOCAL_LIVE_ONLY or not EXTRACT_FROM_STAGING.get("roadcapture"):
+        rows = fetchall(
+            "roadcapture",
+            "SELECT * FROM capture_log WHERE capture_time > %s",
+            (watermark,),
+        )
+        print(f"  extract roadcapture: LIVE local ({len(rows)} rows after watermark)")
+        return rows
+    rows = fetch_staging("roadcapture")
+    filtered = [
+        r for r in rows
+        if r.get("capture_time") is not None and r["capture_time"] > watermark
+    ]
+    print(f"  extract roadcapture: STAGING ({len(filtered)}/{len(rows)} after watermark)")
+    return filtered
 
 
 def extract_policies():
-    if EXTRACT_FROM_STAGING.get("insurance"):
+    # External: never fall back to local insurance DB
+    if "insurance" in EXTERNAL_STAGING_ONLY or EXTRACT_FROM_STAGING.get("insurance"):
         rows = fetch_staging("insurance")
-        print(f"  extract insurance: STAGING ({len(rows)} rows)")
+        print(f"  extract insurance: STAGING/external push ({len(rows)} rows)")
         return rows
-    rows = fetchall("insurance", "SELECT * FROM policies")
-    print(f"  extract insurance: LIVE ({len(rows)} rows)")
-    return rows
+    raise RuntimeError("insurance must be EXTERNAL_STAGING_ONLY — refusing LIVE local read")
 
 
 def extract_regs():
-    if EXTRACT_FROM_STAGING.get("rto_registration"):
+    if "rto_registration" in EXTERNAL_STAGING_ONLY or EXTRACT_FROM_STAGING.get(
+        "rto_registration"
+    ):
         rows = fetch_staging("rto_registration")
-        print(f"  extract rto_registration: STAGING ({len(rows)} rows)")
+        print(f"  extract rto_registration: STAGING/external push ({len(rows)} rows)")
         return rows
-    rows = fetchall("rto_registration", "SELECT * FROM registrations")
-    print(f"  extract rto_registration: LIVE ({len(rows)} rows)")
-    return rows
+    raise RuntimeError(
+        "rto_registration must be EXTERNAL_STAGING_ONLY — refusing LIVE local read"
+    )
 
 
 def extract_thefts():
-    if EXTRACT_FROM_STAGING.get("theft_records"):
-        rows = fetch_staging("theft_records")
-        print(f"  extract theft_records: STAGING ({len(rows)} rows)")
+    # Local: always LIVE theft Docker (ignore leftover stg_theft_shredding)
+    if "theft_records" in LOCAL_LIVE_ONLY or not EXTRACT_FROM_STAGING.get("theft_records"):
+        rows = fetchall("theft_records", "SELECT * FROM theft_shredding")
+        print(f"  extract theft_records: LIVE local ({len(rows)} rows)")
         return rows
-    rows = fetchall("theft_records", "SELECT * FROM theft_shredding")
-    print(f"  extract theft_records: LIVE ({len(rows)} rows)")
+    rows = fetch_staging("theft_records")
+    print(f"  extract theft_records: STAGING ({len(rows)} rows)")
     return rows
 
 
@@ -114,8 +123,65 @@ def set_watermark(cur, new_watermark):
     )
 
 
+def decide_status(plate, stolen_by_plate, policy_by_plate):
+    if plate in stolen_by_plate:
+        return f"STOLEN/SHREDDED -> FLAG ({stolen_by_plate[plate]['report_type']})"
+    pol = policy_by_plate.get(plate)
+    if not pol:
+        return "NO INSURANCE ON FILE -> FLAG"
+    if pol["valid_to"] < AS_OF:
+        return f"INSURANCE EXPIRED ({pol['valid_to']}) -> FLAG"
+    return "OK - INSURED & CLEAR"
+
+
+def refresh_dimensions(wcur, policies, regs, thefts):
+    """
+    Re-apply insurance / RTO / theft onto every existing vehicle_360 row.
+    Needed when teammates push after captures were already loaded (idle ETL).
+    """
+    policy_by_plate = {normalize_plate(p["vehicle_number"]): p for p in policies}
+    reg_by_plate = {normalize_plate(r["reg_no"]): r for r in regs}
+    stolen_by_plate = {normalize_plate(t["plate_number"]): t for t in thefts}
+
+    wcur.execute("SELECT plate_canonical FROM vehicle_360")
+    plates = [r[0] for r in wcur.fetchall()]
+    if not plates:
+        return 0
+
+    updates = []
+    for plate in plates:
+        reg = reg_by_plate.get(plate, {})
+        pol = policy_by_plate.get(plate, {})
+        theft = stolen_by_plate.get(plate, {})
+        updates.append(
+            (
+                reg.get("owner_name"),
+                reg.get("make_model"),
+                reg.get("registration_date"),
+                pol.get("insurer"),
+                pol.get("valid_to"),
+                theft.get("report_type", "-"),
+                decide_status(plate, stolen_by_plate, policy_by_plate),
+                plate,
+            )
+        )
+    wcur.executemany(
+        """
+        UPDATE vehicle_360 SET
+          owner_name=%s, make_model=%s, registration_date=%s,
+          insurer=%s, policy_valid_to=%s, theft_flag=%s, status=%s
+        WHERE plate_canonical=%s
+        """,
+        updates,
+    )
+    return len(updates)
+
+
 started = datetime.now()
 t0 = time.perf_counter()
+print("Ownership map:")
+print("  LOCAL LIVE:     ", ", ".join(LOCAL_LIVE_ONLY))
+print("  EXTERNAL PUSH:  ", ", ".join(EXTERNAL_STAGING_ONLY))
 print(
     "Extract modes:",
     {k: ("STAGING/push" if v else "LIVE") for k, v in EXTRACT_FROM_STAGING.items()},
@@ -144,13 +210,11 @@ policies = extract_policies()
 regs = extract_regs()
 thefts = extract_thefts()
 # Full capture set for xref (watermark only gates vehicle_360 upserts)
-all_captures = (
-    fetch_staging("roadcapture")
-    if EXTRACT_FROM_STAGING.get("roadcapture")
-    else fetchall("roadcapture", "SELECT * FROM capture_log")
-)
+# Always LIVE local roadcapture — never leftover stg_capture_log
+all_captures = fetchall("roadcapture", "SELECT * FROM capture_log")
 
 if not new_captures:
+    n_dim = refresh_dimensions(wcur, policies, regs, thefts)
     counts = refresh_serving_tables(wcur)
     n_xref = rebuild_plate_xref(wcur, all_captures, policies, regs, thefts, normalize_plate)
     n_conf = rebuild_conflict_cache(wcur, thefts, normalize_plate)
@@ -162,29 +226,19 @@ if not new_captures:
         watermark_in=watermark,
         watermark_out=watermark,
         capture_events=0,
-        plates_upserted=0,
+        plates_upserted=n_dim,
         status_changes=0,
-        note=f"idle — serving/xref/conflicts refreshed (xref={n_xref}, conflicts={n_conf})",
+        note=f"idle — dims={n_dim} xref={n_xref} conflicts={n_conf}",
     )
     wh.commit()
     wcur.close()
     wh.close()
-    print("Nothing new in capture_log — refreshed serving + plate xref + conflict cache.")
-    print(f"Serving summary: {counts} | xref={n_xref} | conflicts={n_conf}")
+    print("Nothing new in capture_log — refreshed dimensions + serving + xref + conflicts.")
+    print(f"Serving summary: {counts} | dims={n_dim} | xref={n_xref} | conflicts={n_conf}")
 else:
     policy_by_plate = {normalize_plate(p["vehicle_number"]): p for p in policies}
     reg_by_plate = {normalize_plate(r["reg_no"]): r for r in regs}
     stolen_by_plate = {normalize_plate(t["plate_number"]): t for t in thefts}
-
-    def decide_status(plate):
-        if plate in stolen_by_plate:
-            return f"STOLEN/SHREDDED -> FLAG ({stolen_by_plate[plate]['report_type']})"
-        pol = policy_by_plate.get(plate)
-        if not pol:
-            return "NO INSURANCE ON FILE -> FLAG"
-        if pol["valid_to"] < AS_OF:
-            return f"INSURANCE EXPIRED ({pol['valid_to']}) -> FLAG"
-        return "OK - INSURED & CLEAR"
 
     latest_by_plate = {}
     for c in new_captures:
@@ -208,7 +262,7 @@ else:
     for plate, c in latest_by_plate.items():
         reg, pol = reg_by_plate.get(plate, {}), policy_by_plate.get(plate, {})
         theft = stolen_by_plate.get(plate, {})
-        new_st = decide_status(plate)
+        new_st = decide_status(plate, stolen_by_plate, policy_by_plate)
         rows.append(
             (
                 plate,
@@ -243,6 +297,7 @@ else:
     new_watermark = max(c["capture_time"] for c in new_captures)
     set_watermark(wcur, new_watermark)
 
+    n_dim = refresh_dimensions(wcur, policies, regs, thefts)
     counts = refresh_serving_tables(wcur)
     n_xref = rebuild_plate_xref(wcur, all_captures, policies, regs, thefts, normalize_plate)
     n_conf = rebuild_conflict_cache(wcur, thefts, normalize_plate)
@@ -256,7 +311,7 @@ else:
         capture_events=len(new_captures),
         plates_upserted=len(rows),
         status_changes=len(changes),
-        note=f"incremental + serving/xref/conflicts (xref={n_xref}, conflicts={n_conf})",
+        note=f"incremental + dims={n_dim} xref={n_xref} conflicts={n_conf}",
     )
     log_changes(wcur, run_id, changes)
     wh.commit()
@@ -264,7 +319,7 @@ else:
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
     print(f"-> {len(rows)} distinct vehicle(s) upserted into vehicle_360.")
     print(f"-> {len(changes)} change-log entries (inserts / status flips).")
-    print(f"-> plate xref rows={n_xref}, conflict cache rows={n_conf}")
+    print(f"-> dimensions refreshed on {n_dim} plate(s); xref={n_xref}, conflicts={n_conf}")
     print(f"Watermark advanced to: {new_watermark}")
     print(f"ETL run_id={run_id} duration~={elapsed_ms} ms")
     print("\nServing layer (dwh_status_summary):")
