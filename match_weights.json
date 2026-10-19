@@ -1,0 +1,36 @@
+{
+  "source": "LogisticRegression on compact plate pairs (train_plate_matching.py)",
+  "method": "sklearn.linear_model.LogisticRegression",
+  "built_at": "2026-10-19T14:09:33",
+  "features": [
+    "ocr_sim",
+    "lev_sim",
+    "jaro_winkler",
+    "format_repair"
+  ],
+  "raw_coefficients": {
+    "ocr_sim": 2.828458,
+    "lev_sim": 1.98988,
+    "jaro_winkler": 3.059617,
+    "format_repair": 3.16896
+  },
+  "intercept": -7.947065,
+  "weights": {
+    "ocr": 0.256,
+    "lev": 0.1801,
+    "jw": 0.277,
+    "format": 0.2869
+  },
+  "cv_metrics": {
+    "cv_f1": 0.7697,
+    "cv_precision": 0.8354,
+    "cv_recall": 0.7135,
+    "cv_threshold": 0.35,
+    "n_rows": 576,
+    "n_pos": 192,
+    "n_neg": 384
+  },
+  "n_plates": 32,
+  "seed": 7,
+  "note": "Positive LR coefs L1-normalised to sum=1 for the app's weighted string score."
+}

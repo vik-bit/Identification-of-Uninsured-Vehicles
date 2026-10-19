@@ -52,7 +52,12 @@ including the evaluator's live INSERT / UPDATE / DELETE.
 
 ## 2. Rubric 1 — algorithm and justification
 
-`entity_matching.py`, score = `0.3·OCR + 0.3·Levenshtein + 0.3·Jaro-Winkler + 0.1·format + context`
+`entity_matching.py`, score = `w_ocr·OCR + w_lev·Levenshtein + w_jw·Jaro-Winkler + w_fmt·format + context`
+
+Weights are **not hand-picked**: `train_plate_matching.py` fits `LogisticRegression` on a compact
+labelled set (noisy plate vs candidate, match/non-match), takes the positive coefficients, and
+L1-normalises them into `match_weights.json`. OCR glyphs use a **road-type-style dictionary**
+(`plate_ocr_lookup.json`): seed look-alikes plus variants discovered from training pairs (≥2).
 
 | signal | why it is needed |
 |---|---|
@@ -68,7 +73,8 @@ cases while scoring only a few dozen candidates.
 
 **Evidence** (`evaluate_matching.py`): 600 real vehicles' plates are corrupted 7 ways. Each one
 competes with about 24 realistic look-alikes (same series, nearby numbers, which is how RTOs
-allot plates). Weights are grid-searched on one half and reported on the other half.
+allot plates). App weights come from the logistic train step above; the eval script can still
+grid-search for comparison.
 
 | method | top-1 |
 |---|---|

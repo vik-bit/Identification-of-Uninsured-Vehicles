@@ -1,0 +1,67 @@
+{
+  "source": "compact synthetic plate OCR pairs (train_plate_matching.py)",
+  "built_at": "2026-10-19T14:09:33",
+  "lookup": {
+    "o": "0",
+    "q": "0",
+    "d": "0",
+    "i": "1",
+    "l": "1",
+    "s": "5",
+    "b": "8",
+    "z": "2",
+    "g": "6"
+  },
+  "groups": [
+    [
+      "0",
+      "O",
+      "Q",
+      "D"
+    ],
+    [
+      "1",
+      "I",
+      "L"
+    ],
+    [
+      "5",
+      "S"
+    ],
+    [
+      "8",
+      "B"
+    ],
+    [
+      "2",
+      "Z"
+    ],
+    [
+      "6",
+      "G"
+    ]
+  ],
+  "notes": {
+    "o": "seed: OCR digit look-alike",
+    "q": "seed: OCR digit look-alike",
+    "d": "seed: OCR digit look-alike",
+    "i": "seed: OCR digit look-alike",
+    "l": "seed: OCR digit look-alike",
+    "s": "seed: OCR digit look-alike",
+    "b": "seed: OCR digit look-alike",
+    "z": "seed: OCR digit look-alike",
+    "g": "seed: OCR digit look-alike"
+  },
+  "pair_counts": {
+    "B->8": 17,
+    "I->1": 16,
+    "Z->2": 16,
+    "S->5": 15,
+    "G->6": 12,
+    "O->0": 10,
+    "6->G": 5,
+    "8->B": 4,
+    "0->O": 1
+  },
+  "discovered": {}
+}

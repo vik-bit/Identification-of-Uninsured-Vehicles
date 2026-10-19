@@ -11,6 +11,7 @@ HOW A MATCH IS SCORED (justification in PHASE2_VIVA.md, measured by evaluate_mat
   1. normalize_plate        strip separators / case        "DL-9-CAF-8888" == "dl9caf8888"
   2. OCR-weighted distance  0<->O, 1<->I, 8<->B, 5<->S ...   cost 0.25 instead of 1
                             (+ adjacent transposition, Damerau)
+                            glyph families come from plate_ocr_lookup.json (seed + discovered)
   3. Levenshtein            plain edit distance (insert / drop / wrong char)
   4. Jaro-Winkler           rewards a shared state/RTO prefix
   5. Format repair          Indian plate grammar  SS 99 XXX 9999 : a letter sitting in a
@@ -19,6 +20,9 @@ HOW A MATCH IS SCORED (justification in PHASE2_VIVA.md, measured by evaluate_mat
 
   string score = W_OCR*ocr_sim + W_LEV*lev_sim + W_JW*jw + W_FMT*format_repair_hit
   final score  = string score + context bonus (or penalty)
+
+  Weights: LogisticRegression on compact labelled pairs (train_plate_matching.py) →
+  match_weights.json. Falls back to equal-ish defaults if that file is missing.
 
 Speed: candidates come from an "OCR-skeleton + symmetric-delete" index (blocking), so a
 query only scores the few dozen plates that are within ~2 edits, not all 5000+.
@@ -42,9 +46,76 @@ from db_config import connect
 
 HERE = Path(__file__).resolve().parent
 
-# --------------------------------------------------------------------------- weights
-# Chosen by grid search on a held-out split in evaluate_matching.py (see PHASE2_VIVA.md).
-W_OCR, W_LEV, W_JW, W_FMT = 0.30, 0.30, 0.30, 0.10
+# --------------------------------------------------------------------------- weights + OCR dictionary
+# Defaults used only when match_weights.json / plate_ocr_lookup.json are absent.
+_DEFAULT_W = (0.30, 0.30, 0.30, 0.10)
+_DEFAULT_OCR_GROUPS = [set("0OQD"), set("1IL"), set("5S"), set("8B"), set("2Z"), set("6G")]
+_DEFAULT_TO_DIGIT = {"O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "S": "5", "B": "8", "Z": "2", "G": "6"}
+
+WEIGHTS_META: dict[str, Any] = {}
+LOOKUP_META: dict[str, Any] = {}
+
+
+def _load_trained_weights() -> tuple[float, float, float, float]:
+    """Positive LR coefs from train_plate_matching.py, already normalised to sum=1."""
+    global WEIGHTS_META
+    path = HERE / "match_weights.json"
+    if not path.exists():
+        return _DEFAULT_W
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        w = payload.get("weights") or {}
+        vals = (float(w["ocr"]), float(w["lev"]), float(w["jw"]), float(w["format"]))
+        if abs(sum(vals) - 1.0) > 0.05 or any(v < 0 for v in vals):
+            return _DEFAULT_W
+        WEIGHTS_META = {
+            "source": payload.get("source"),
+            "cv_metrics": payload.get("cv_metrics"),
+            "built_at": payload.get("built_at"),
+        }
+        return vals
+    except Exception:
+        return _DEFAULT_W
+
+
+def _load_ocr_dictionary() -> tuple[list[set[str]], dict[str, str], dict[str, list[str]]]:
+    """
+    Road-type-lookup style dictionary for plates: variant glyph → canonical digit,
+    plus glyph families for OCR-weighted distance. Built by train_plate_matching.py.
+    """
+    global LOOKUP_META
+    path = HERE / "plate_ocr_lookup.json"
+    groups = [set(g) for g in _DEFAULT_OCR_GROUPS]
+    to_digit = dict(_DEFAULT_TO_DIGIT)
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            LOOKUP_META = {
+                "source": payload.get("source"),
+                "discovered": payload.get("discovered") or {},
+                "built_at": payload.get("built_at"),
+            }
+            if payload.get("groups"):
+                groups = [set(str(c).upper() for c in g) for g in payload["groups"] if g]
+            lookup = payload.get("lookup") or {}
+            for variant, canonical in lookup.items():
+                v, c = str(variant).upper(), str(canonical).upper()
+                if len(v) == 1 and len(c) == 1 and c.isdigit():
+                    to_digit[v] = c
+        except Exception:
+            pass
+    # reverse map for format repair (digit slot → letter options)
+    to_letter: dict[str, list[str]] = {}
+    for letter, digit in to_digit.items():
+        to_letter.setdefault(digit, [])
+        if letter.isalpha() and letter not in to_letter[digit]:
+            to_letter[digit].append(letter)
+    return groups, to_digit, to_letter
+
+
+W_OCR, W_LEV, W_JW, W_FMT = _load_trained_weights()
+OCR_GROUPS, TO_DIGIT, TO_LETTER = _load_ocr_dictionary()
+_GROUP_OF = {ch: i for i, g in enumerate(OCR_GROUPS) for ch in g}
 
 CTX_MATCH = {"color": 0.06, "type": 0.04, "model": 0.08}
 CTX_MISMATCH = {"color": -0.04, "type": -0.03, "model": -0.06}
@@ -60,11 +131,19 @@ STATE_CODES = {
 }
 PLATE_RE = re.compile(r"^([A-Z]{2})(\d{1,2})([A-Z]{1,3})(\d{4})$")
 
-# Characters an ANPR/OCR engine confuses (same "glyph family")
-OCR_GROUPS = [set("0OQD"), set("1IL"), set("5S"), set("8B"), set("2Z"), set("6G")]
-_GROUP_OF = {ch: i for i, g in enumerate(OCR_GROUPS) for ch in g}
-TO_DIGIT = {"O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "S": "5", "B": "8", "Z": "2", "G": "6"}
-TO_LETTER = {"0": ["D", "Q"], "1": ["L"], "5": ["S"], "8": ["B"], "2": ["Z"], "6": ["G"]}
+
+def reload_matching_artifacts() -> dict[str, Any]:
+    """Re-read match_weights.json + plate_ocr_lookup.json (after retrain)."""
+    global W_OCR, W_LEV, W_JW, W_FMT, OCR_GROUPS, TO_DIGIT, TO_LETTER, _GROUP_OF
+    W_OCR, W_LEV, W_JW, W_FMT = _load_trained_weights()
+    OCR_GROUPS, TO_DIGIT, TO_LETTER = _load_ocr_dictionary()
+    _GROUP_OF = {ch: i for i, g in enumerate(OCR_GROUPS) for ch in g}
+    return {
+        "weights": {"ocr": W_OCR, "lev": W_LEV, "jw": W_JW, "format": W_FMT},
+        "weights_meta": WEIGHTS_META,
+        "lookup_meta": LOOKUP_META,
+        "ocr_groups": [sorted(g) for g in OCR_GROUPS],
+    }
 
 
 def normalize_plate(raw: Any) -> str:

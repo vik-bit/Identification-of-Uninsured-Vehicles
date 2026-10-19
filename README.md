@@ -100,6 +100,13 @@ streamlit run app.py
 # → tab "Entity match" → upload sample_plates/scan_DL9CAF8B88.png
 ```
 
+Plate-match weights + OCR dictionary (ML, not hand-tuned):
+
+```powershell
+pip install -r requirements.txt
+python train_plate_matching.py          # writes match_weights.json + plate_ocr_lookup.json
+```
+
 ---
 
 ## Architecture (short)
@@ -142,6 +149,8 @@ rto (PUSH) ──────────┘         │
 | `run_etl.py` | Incremental watermark ETL |
 | `app.py` | Streamlit dashboard |
 | `entity_matching.py` / `plate_ocr.py` | Phase-2 matching + image extract |
+| `train_plate_matching.py` | Train ML weights + OCR glyph dictionary |
+| `match_weights.json` / `plate_ocr_lookup.json` | Trained weights + look-up (from train script) |
 | `teammate_push/` | Scripts **teammates** run on their machines |
 | `roadcapture_db/` / `theft_records_db/` | Docker packs for the **two local** DBs |
 

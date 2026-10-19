@@ -21,6 +21,12 @@ from fpdf import FPDF
 
 from db_config import connect
 from entity_matching import (
+    LOOKUP_META,
+    WEIGHTS_META,
+    W_FMT,
+    W_JW,
+    W_LEV,
+    W_OCR,
     align,
     anomaly_summary,
     cleanse_all,
@@ -1168,10 +1174,17 @@ gap confirmed by context). **REVIEW** = shown with a suggestion, applied only wh
 | Indian plate grammar (format repair) | letter in a digit slot | `B` in `8B88` must be `8` |
 | context: colour + type (camera), model (RTO) | ties between equally close plates | Black SUV Nexon vs White Swift |
 
-`score = 0.3·OCR + 0.3·Lev + 0.3·JW + 0.1·format + context` — weights grid-searched on a DEV half,
-reported on a held-out TEST half. Plate text alone cannot separate look-alike plates in the same
-series; context is what pushes accuracy from ~67% to ~98%.
+`score = w_ocr·OCR + w_lev·Lev + w_jw·JW + w_fmt·format + context` — weights from
+`LogisticRegression` on compact labelled pairs (`train_plate_matching.py` → `match_weights.json`);
+OCR glyph dictionary in `plate_ocr_lookup.json` (seed + variants discovered from training).
+Plate text alone cannot separate look-alike plates in the same series; context is what pushes
+accuracy from ~67% to ~98%.
             """
+        )
+        st.caption(
+            f"App weights (ML): OCR={W_OCR:.2f} Lev={W_LEV:.2f} JW={W_JW:.2f} format={W_FMT:.2f}"
+            + (f" · CV F1={WEIGHTS_META.get('cv_metrics', {}).get('cv_f1')}" if WEIGHTS_META.get("cv_metrics") else " · defaults (run train_plate_matching.py)")
+            + (f" · OCR dict discoveries: {LOOKUP_META.get('discovered') or '{}'}" if LOOKUP_META else "")
         )
         n_q = st.slider("Benchmark size (noisy plates)", 200, 2000, 600, 100, key="bench_n")
         if st.button("Run accuracy benchmark", type="primary", key="btn_bench"):
@@ -1195,7 +1208,8 @@ series; context is what pushes accuracy from ~67% to ~98%.
             st.dataframe((pk * 100).round(0).astype(int).astype(str) + "%", use_container_width=True)
             sn = bench.get("seeded_noise") or {}
             st.caption(
-                f"Weights: {bench['weights']} · blocking recall {bench['blocking_recall']:.0%} · "
+                f"Benchmark grid-search weights: {bench['weights']} · app ML weights: {bench.get('weights_in_app')} · "
+                f"blocking recall {bench['blocking_recall']:.0%} · "
                 f"each test plate competes with ~24 look-alike vehicles"
                 + (f" · seeded DB noise recovered: {sn['top1']:.0%} of {sn['n']}" if sn.get("n") else "")
             )
